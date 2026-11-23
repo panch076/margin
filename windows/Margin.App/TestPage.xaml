@@ -1,0 +1,39 @@
+<UserControl x:Class="MarginApp.TestPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="36,30,36,36" MaxWidth="760" HorizontalAlignment="Left">
+            <TextBlock Text="Practice Test" Style="{StaticResource PageTitle}" />
+            <TextBlock Style="{StaticResource Muted}" Margin="0,0,0,22"
+                       Text="Each section has two timed modules. Your score on the first decides whether the second is the higher or lower difficulty version, the same way the real test adapts." />
+            <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+                <StackPanel>
+                    <TextBlock Text="What to take" Style="{StaticResource CardTitle}" Margin="0,0,0,10" />
+                    <RadioButton x:Name="FullRadio" GroupName="kind" IsChecked="True" Margin="0,0,0,10">
+                        <StackPanel><TextBlock Text="Full-length test" FontWeight="SemiBold" />
+                            <TextBlock Style="{StaticResource Muted}" Text="Reading and Writing (2 × 27 questions, 32 minutes each), a 10-minute break, then Math (2 × 22 questions, 35 minutes each). About 2 hours 24 minutes." /></StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="RwRadio" GroupName="kind" Margin="0,0,0,10">
+                        <StackPanel><TextBlock Text="Reading and Writing only" FontWeight="SemiBold" />
+                            <TextBlock Style="{StaticResource Muted}" Text="Two modules, 54 questions, 64 minutes." /></StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="MathRadio" GroupName="kind">
+                        <StackPanel><TextBlock Text="Math only" FontWeight="SemiBold" />
+                            <TextBlock Style="{StaticResource Muted}" Text="Two modules, 44 questions, 70 minutes. A graphing calculator and reference sheet are available." /></StackPanel>
+                    </RadioButton>
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource Card}" Margin="0,0,0,20">
+                <StackPanel>
+                    <TextBlock Text="Question selection" Style="{StaticResource CardTitle}" Margin="0,0,0,10" />
+                    <CheckBox x:Name="ExcludeLive" IsChecked="True" Content="Leave out questions used on official full-length practice tests" Margin="0,0,0,8" />
+                    <CheckBox x:Name="PreferUnseen" IsChecked="True" Content="Prefer questions I have not seen yet" />
+                    <TextBlock x:Name="PoolText" Style="{StaticResource Muted}" FontSize="12.5" Margin="0,12,0,0" />
+                </StackPanel>
+            </Border>
+            <Button Content="Start test" Style="{DynamicResource AccentButtonStyle}" Padding="26,9" HorizontalAlignment="Left" Click="Start_Click" />
+            <TextBlock Style="{StaticResource Muted}" FontSize="12" Margin="0,18,0,0"
+                       Text="Scores are estimates. The real test is scored with calibrated statistics that are not published, so treat the number as a ballpark and the question-by-question review as the useful part." />
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

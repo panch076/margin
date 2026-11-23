@@ -1,0 +1,96 @@
+<UserControl x:Class="MarginApp.SessionView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid Background="{DynamicResource ApplicationBackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- top bar: module name, clock, tools -->
+        <Border Grid.Row="0" BorderThickness="0,0,0,1" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" Padding="24,12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                    <TextBlock x:Name="ModuleTitle" FontSize="16" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                    <TextBlock x:Name="ModuleSub" Style="{StaticResource Muted}" FontSize="12" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" HorizontalAlignment="Center">
+                    <TextBlock x:Name="Clock" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" FontFamily="Segoe UI Variable Display, Segoe UI" />
+                    <Button x:Name="HideClock" Content="Hide" FontSize="11" Padding="12,2" Margin="0,2,0,0" HorizontalAlignment="Center" Click="HideClock_Click" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <Button x:Name="CalcButton" Margin="0,0,8,0" Padding="12,7" Click="Calculator_Click">
+                        <StackPanel Orientation="Horizontal"><TextBlock Style="{StaticResource Glyph}" Text="&#xE8EF;" /><TextBlock Text="Calculator" Margin="8,0,0,0" /></StackPanel>
+                    </Button>
+                    <Button x:Name="RefButton" Margin="0,0,8,0" Padding="12,7" Click="Reference_Click">
+                        <StackPanel Orientation="Horizontal"><TextBlock Style="{StaticResource Glyph}" Text="&#xE82D;" /><TextBlock Text="Reference" Margin="8,0,0,0" /></StackPanel>
+                    </Button>
+                    <Button Padding="12,7" Click="Exit_Click">
+                        <StackPanel Orientation="Horizontal"><TextBlock Style="{StaticResource Glyph}" Text="&#xE711;" /><TextBlock Text="Exit" Margin="8,0,0,0" /></StackPanel>
+                    </Button>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- body: one of question / review page / break -->
+        <ContentControl x:Name="WebHost" Grid.Row="1" />
+
+        <ScrollViewer x:Name="ReviewPanel" Grid.Row="1" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+            <StackPanel MaxWidth="760" Margin="32,36,32,36">
+                <TextBlock Text="Check Your Work" FontSize="26" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                <TextBlock x:Name="ReviewHint" Style="{StaticResource Muted}" TextAlignment="Center" Margin="0,8,0,22" />
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <DockPanel Margin="0,0,0,14">
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                <TextBlock Style="{StaticResource Muted}" FontSize="12.5" Text="Filled = answered      ⚑ = marked for review" />
+                            </StackPanel>
+                            <TextBlock x:Name="ReviewTitle" FontWeight="SemiBold" />
+                        </DockPanel>
+                        <WrapPanel x:Name="ReviewGrid" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <StackPanel x:Name="BreakPanel" Grid.Row="1" Visibility="Collapsed" VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="520">
+            <TextBlock Text="Break" FontSize="30" FontWeight="SemiBold" HorizontalAlignment="Center" />
+            <TextBlock Style="{StaticResource Muted}" TextAlignment="Center" Margin="0,8,0,18"
+                       Text="Reading and Writing is finished. Math starts when the break ends, or as soon as you choose to continue." />
+            <TextBlock x:Name="BreakClock" FontSize="56" FontWeight="SemiBold" HorizontalAlignment="Center" />
+            <Button Content="Resume testing" Style="{DynamicResource AccentButtonStyle}" Padding="26,9" Margin="0,22,0,0" HorizontalAlignment="Center" Click="Resume_Click" />
+        </StackPanel>
+
+        <!-- bottom bar: navigator and paging -->
+        <Border x:Name="BottomBar" Grid.Row="2" BorderThickness="0,1,0,0" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" Padding="24,12">
+            <Grid>
+                <TextBlock x:Name="AnsweredText" Style="{StaticResource Muted}" VerticalAlignment="Center" HorizontalAlignment="Left" />
+                <Button x:Name="NavButton" HorizontalAlignment="Center" Padding="18,8" Click="Nav_Click">
+                    <StackPanel Orientation="Horizontal"><TextBlock x:Name="NavLabel" FontWeight="SemiBold" /><TextBlock Style="{StaticResource Glyph}" Text="&#xE70E;" FontSize="11" Margin="10,1,0,0" /></StackPanel>
+                </Button>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button x:Name="BackButton" Content="Back" Padding="24,8" Margin="0,0,10,0" Click="Back_Click" />
+                    <Button x:Name="NextButton" Content="Next" Style="{DynamicResource AccentButtonStyle}" Padding="24,8" Click="Next_Click" />
+                </StackPanel>
+                <Popup x:Name="NavPopup" PlacementTarget="{Binding ElementName=NavButton}" Placement="Top" StaysOpen="False"
+                       AllowsTransparency="True" VerticalOffset="-10">
+                    <Border Background="{DynamicResource SolidBackgroundFillColorBaseBrush}" BorderBrush="{DynamicResource ControlStrongStrokeColorDefaultBrush}"
+                            BorderThickness="1" CornerRadius="12" Padding="18" Width="470" Margin="12">
+                        <StackPanel>
+                            <TextBlock x:Name="PopupTitle" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,4" />
+                            <TextBlock Style="{StaticResource Muted}" FontSize="12" HorizontalAlignment="Center" Margin="0,0,0,12" Text="Filled = answered      ⚑ = marked for review" />
+                            <WrapPanel x:Name="PopupGrid" />
+                            <Button Content="Go to review page" HorizontalAlignment="Center" Margin="0,14,0,0" Padding="16,6" Click="GoReview_Click" />
+                        </StackPanel>
+                    </Border>
+                </Popup>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

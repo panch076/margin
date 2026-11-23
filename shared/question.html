@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: https:; style-src 'unsafe-inline'; script-src 'nonce-margin'; font-src data:">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Question</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --accent: #4353d8;
+  --bg: #ffffff;
+  --pane: #f6f7f9;
+  --ink: #16181d;
+  --muted: #646b78;
+  --line: #d9dde4;
+  --line-strong: #9aa2b1;
+  --good: #1f8a4c;
+  --good-bg: #e7f6ec;
+  --bad: #c0362c;
+  --bad-bg: #fdecea;
+  --chip: #eceef3;
+  --inset-top: 0px;
+  --inset-bottom: 0px;
+  --split: 50%;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --accent: #8c98ff;
+    --bg: #17181c;
+    --pane: #1f2126;
+    --ink: #eceef2;
+    --muted: #9ba3b2;
+    --line: #33363e;
+    --line-strong: #5d6470;
+    --good: #5bd08a;
+    --good-bg: #173524;
+    --bad: #ff8a80;
+    --bad-bg: #3b1c1a;
+    --chip: #2a2d34;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg); color: var(--ink);
+  font: 16px/1.55 -apple-system, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased; overflow: hidden;
+}
+#root { height: 100%; display: grid; grid-template-columns: 1fr; }
+#root.split { grid-template-columns: var(--split) 9px minmax(280px, 1fr); }
+.pane { overflow-y: auto; padding: calc(28px + var(--inset-top)) 36px calc(40px + var(--inset-bottom)); min-width: 0; }
+#root:not(.split) .pane > .col { max-width: 760px; margin: 0 auto; }
+#root:not(.split) #stimPane, #root:not(.split) #divider { display: none; }
+#divider { cursor: col-resize; position: relative; background: transparent; }
+#divider::before { content: ""; position: absolute; left: 4px; top: 0; bottom: 0; width: 1px; background: var(--line); }
+#divider::after {
+  content: ""; position: absolute; left: 1px; top: 50%; width: 7px; height: 44px; margin-top: -22px;
+  border-radius: 4px; background: var(--line-strong); opacity: .55; transition: opacity .15s;
+}
+#divider:hover::after, body.dragging #divider::after { opacity: 1; background: var(--accent); }
+body.dragging { cursor: col-resize; user-select: none; }
+
+.prose { font-family: ui-serif, "New York", "Iowan Old Style", Charter, Georgia, serif; font-size: 17.5px; line-height: 1.65; }
+.prose.math { font-family: inherit; font-size: 17px; }
+.prose p { margin: 0 0 .9em; }
+.prose img, .prose svg { max-width: 100%; height: auto; }
+.prose table { border-collapse: collapse; margin: 12px 0; font-size: .93em; }
+.prose th, .prose td { border: 1px solid var(--line-strong); padding: 6px 12px; text-align: left; }
+.prose th { background: var(--pane); }
+.prose math { font-size: 1.08em; }
+.prose figure { margin: 12px 0; }
+.prose ul, .prose ol { padding-left: 1.4em; }
+@media (prefers-color-scheme: dark) {
+  .prose img, .prose svg { background: #fff; border-radius: 8px; padding: 6px; }
+  .choice .content svg, .choice .content img { padding: 2px; }
+}
+
+.qbar {
+  display: flex; align-items: center; gap: 10px; padding: 0 0 12px; margin-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.qnum {
+  min-width: 34px; height: 34px; padding: 0 9px; border-radius: 9px; background: var(--ink); color: var(--bg);
+  display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.tool {
+  appearance: none; border: 1px solid transparent; background: transparent; color: var(--ink); font: inherit; font-size: 14px;
+  display: inline-flex; align-items: center; gap: 7px; padding: 6px 11px; border-radius: 9px; cursor: pointer;
+}
+.tool:hover { background: var(--chip); }
+.tool[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.tool svg { width: 16px; height: 16px; }
+#markBtn[aria-pressed="true"] svg path { fill: currentColor; }
+.spacer { flex: 1; }
+.verdict { font-size: 13px; font-weight: 650; padding: 4px 11px; border-radius: 999px; }
+.verdict.ok { color: var(--good); background: var(--good-bg); }
+.verdict.no { color: var(--bad); background: var(--bad-bg); }
+.verdict.skip { color: var(--muted); background: var(--chip); }
+
+#stem { margin-bottom: 18px; }
+#choices { display: grid; gap: 11px; }
+.row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
+.choice {
+  appearance: none; width: 100%; text-align: left; font: inherit; color: inherit; cursor: pointer;
+  display: grid; grid-template-columns: 30px 1fr; gap: 13px; align-items: center;
+  padding: 11px 15px; border-radius: 13px; background: var(--bg);
+  border: 1.5px solid var(--line-strong); transition: border-color .12s, background .12s, box-shadow .12s;
+  position: relative;
+}
+.choice:hover { border-color: var(--ink); }
+.choice .letter {
+  width: 28px; height: 28px; border-radius: 50%; border: 1.5px solid var(--ink);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 13.5px; font-weight: 700;
+}
+.choice .content > :first-child { margin-top: 0; }
+.choice .content > :last-child { margin-bottom: 0; }
+.choice.selected { border-color: var(--accent); box-shadow: 0 0 0 1.5px var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--bg)); }
+.choice.selected .letter { background: var(--accent); border-color: var(--accent); color: #fff; }
+.choice.out { color: var(--muted); border-style: dashed; }
+.choice.out .letter { border-color: var(--muted); }
+.choice.out::after { content: ""; position: absolute; left: -5px; right: -5px; top: 50%; height: 1.5px; background: var(--ink); }
+.strike {
+  appearance: none; border: 0; background: transparent; color: var(--muted); cursor: pointer;
+  font: inherit; font-size: 13px; font-weight: 650; min-width: 46px; height: 30px; border-radius: 8px;
+  text-decoration: line-through; display: none;
+}
+.strike:hover { background: var(--chip); color: var(--ink); }
+.strike.undo { text-decoration: underline; }
+body.elim .strike { display: inline-block; }
+.choice[disabled] { cursor: default; }
+.choice[disabled]:hover { border-color: var(--line-strong); }
+.choice.correct, .choice.correct:hover { border-color: var(--good); box-shadow: 0 0 0 1.5px var(--good); background: var(--good-bg); }
+.choice.correct .letter { background: var(--good); border-color: var(--good); color: #fff; }
+.choice.wrong, .choice.wrong:hover { border-color: var(--bad); box-shadow: 0 0 0 1.5px var(--bad); background: var(--bad-bg); }
+.choice.wrong .letter { background: var(--bad); border-color: var(--bad); color: #fff; }
+.tag { font-size: 12px; font-weight: 650; margin-top: 4px; display: block; font-family: -apple-system, "Segoe UI", system-ui, sans-serif; }
+.choice.correct .tag { color: var(--good); }
+.choice.wrong .tag { color: var(--bad); }
+
+#spr { display: none; }
+#spr label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+#sprInput {
+  font: inherit; font-size: 20px; width: 170px; padding: 9px 13px; border-radius: 11px; color: inherit;
+  border: 1.5px solid var(--line-strong); background: var(--bg); outline: none; font-variant-numeric: tabular-nums;
+}
+#sprInput:focus { border-color: var(--accent); box-shadow: 0 0 0 1.5px var(--accent); }
+#sprPreview { margin-top: 12px; font-size: 14px; color: var(--muted); }
+#sprPreview b { color: var(--ink); font-size: 17px; margin-left: 6px; }
+.sprReview { display: grid; gap: 6px; padding: 14px 16px; border-radius: 13px; background: var(--pane); border: 1px solid var(--line); }
+.sprReview .k { font-size: 12.5px; color: var(--muted); }
+.sprReview .v { font-size: 18px; font-weight: 650; }
+.sprReview .v.ok { color: var(--good); } .sprReview .v.no { color: var(--bad); }
+
+#rationale { display: none; margin-top: 26px; padding: 18px 20px; border-radius: 14px; background: var(--pane); border: 1px solid var(--line); }
+#rationale h3 { margin: 0 0 8px; font: 650 13px/1.3 -apple-system, "Segoe UI", system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+#rationale .prose { font-size: 15.5px; }
+.empty { height: 100%; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 15px; }
+.directions { font-size: 14px; color: var(--muted); margin-bottom: 14px; }
+::-webkit-scrollbar { width: 10px; }
+::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 6px; border: 2px solid var(--bg); }
+</style>
+</head>
+<body>
+<div id="root">
+  <section class="pane" id="stimPane"><div class="col"><div class="prose" id="stim"></div></div></section>
+  <div id="divider" title="Drag to resize"></div>
+  <section class="pane" id="qPane"><div class="col">
+    <div class="qbar" id="qbar">
+      <span class="qnum" id="qnum"></span>
+      <button class="tool" id="markBtn" aria-pressed="false" title="Mark for review">
+        <svg viewBox="0 0 16 16" fill="none"><path d="M4 2.2h8a.6.6 0 0 1 .6.6v10.6L8 10.6l-4.6 2.8V2.8a.6.6 0 0 1 .6-.6Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+        <span>Mark for Review</span>
+      </button>
+      <span class="spacer"></span>
+      <span class="verdict" id="verdict" hidden></span>
+      <button class="tool" id="elimBtn" aria-pressed="false" title="Cross out answer choices you think are wrong">
+        <svg viewBox="0 0 16 16" fill="none"><path d="M2 8h12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M4.2 12.5 8 3.5l3.8 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" opacity=".55"/></svg>
+        <span>Eliminate</span>
+      </button>
+    </div>
+    <div class="prose" id="stimInline"></div>
+    <div class="prose" id="stem"></div>
+    <div id="choices"></div>
+    <div id="spr">
+      <div id="sprEntry">
+        <label for="sprInput">Enter your answer</label>
+        <input id="sprInput" inputmode="decimal" autocomplete="off" spellcheck="false" maxlength="6">
+        <div id="sprPreview">Answer preview:<b id="sprShown"></b></div>
+      </div>
+      <div class="sprReview" id="sprReview" hidden></div>
+    </div>
+    <div id="rationale"><h3>Explanation</h3><div class="prose" id="rationaleBody"></div></div>
+  </div></section>
+</div>
+<div class="empty" id="empty" hidden></div>
+<script nonce="margin">
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var LETTERS = ["A", "B", "C", "D", "E", "F"];
+  var P = null;          // current payload
+  var elimMode = false;  // sticky across questions, like a tool toggle
+
+  function send(msg) {
+    try {
+      if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.margin) {
+        window.webkit.messageHandlers.margin.postMessage(msg);
+      } else if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.postMessage(msg);
+      } else {
+        (window.__out = window.__out || []).push(msg);
+      }
+    } catch (e) { /* host not attached */ }
+  }
+
+  // Question HTML comes from the downloaded bank. Strip anything executable before inserting it.
+  function clean(html) {
+    var t = document.createElement("template");
+    t.innerHTML = html || "";
+    t.content.querySelectorAll("script,iframe,object,embed,link,meta,base,form,style").forEach(function (n) { n.remove(); });
+    t.content.querySelectorAll("*").forEach(function (el) {
+      Array.prototype.slice.call(el.attributes).forEach(function (a) {
+        if (/^on/i.test(a.name)) el.removeAttribute(a.name);
+        else if (/^(href|src|xlink:href|action|formaction)$/i.test(a.name) && /^\s*javascript:/i.test(a.value)) el.removeAttribute(a.name);
+      });
+    });
+    return t.content;
+  }
+  function fill(el, html) { el.replaceChildren(clean(html)); }
+  function hasContent(html) { return !!(html && html.replace(/<(?!img|svg|math|table)[^>]*>/gi, "").replace(/&nbsp;/g, " ").trim()); }
+
+  function render(p) {
+    P = p || {};
+    var empty = $("empty"), root = $("root");
+    if (!P.stem && !P.stimulus) {
+      root.hidden = true; empty.hidden = false; empty.textContent = P.message || "";
+      return;
+    }
+    root.hidden = false; empty.hidden = true;
+    document.body.style.setProperty("--inset-top", (P.insetTop || 0) + "px");
+    document.body.style.setProperty("--inset-bottom", (P.insetBottom || 0) + "px");
+    if (P.accent) document.documentElement.style.setProperty("--accent", P.accent);
+
+    var review = P.review || null;
+    var locked = !!review || !!P.readOnly;
+    var isMath = P.section === "math";
+    var stimulus = hasContent(P.stimulus) ? P.stimulus : "";
+    var split = !!stimulus && !isMath;
+    root.classList.toggle("split", split);
+    ["stim", "stimInline", "stem"].forEach(function (id) { $(id).classList.toggle("math", isMath); });
+    fill($("stim"), split ? stimulus : "");
+    fill($("stimInline"), split ? "" : stimulus);
+    fill($("stem"), P.stem);
+
+    $("qbar").style.display = P.hideBar ? "none" : "";
+    $("qnum").textContent = P.number != null ? String(P.number) : "";
+    $("qnum").style.display = P.number != null ? "" : "none";
+    $("markBtn").style.display = locked ? "none" : "";
+    $("markBtn").setAttribute("aria-pressed", P.marked ? "true" : "false");
+    var isSpr = P.type === "spr";
+    $("elimBtn").style.display = (locked || isSpr) ? "none" : "";
+    $("elimBtn").setAttribute("aria-pressed", elimMode ? "true" : "false");
+    document.body.classList.toggle("elim", elimMode && !locked && !isSpr);
+
+    var v = $("verdict");
+    if (review) {
+      v.hidden = false;
+      var blank = P.answer == null || P.answer === "";
+      v.className = "verdict " + (blank ? "skip" : review.isCorrect ? "ok" : "no");
+      v.textContent = blank ? "Unanswered" : review.isCorrect ? "Correct" : "Incorrect";
+    } else { v.hidden = true; }
+
+    $("choices").style.display = isSpr ? "none" : "";
+    $("spr").style.display = isSpr ? "block" : "none";
+    if (isSpr) renderSpr(review, locked); else renderChoices(review, locked);
+
+    var r = $("rationale");
+    if (review && hasContent(review.rationale)) { r.style.display = "block"; fill($("rationaleBody"), review.rationale); }
+    else { r.style.display = "none"; $("rationaleBody").replaceChildren(); }
+
+    if (P.resetScroll !== false) { $("qPane").scrollTop = 0; $("stimPane").scrollTop = 0; }
+  }
+
+  function renderChoices(review, locked) {
+    var box = $("choices"); box.replaceChildren();
+    var elim = P.eliminated || [];
+    var correct = review ? (review.correct || []).map(function (s) { return String(s).toUpperCase(); }) : [];
+    (P.choices || []).forEach(function (html, i) {
+      var L = LETTERS[i];
+      var row = document.createElement("div"); row.className = "row";
+      var b = document.createElement("button"); b.className = "choice"; b.type = "button";
+      var letter = document.createElement("span"); letter.className = "letter"; letter.textContent = L;
+      var content = document.createElement("span"); content.className = "content prose" + (P.section === "math" ? " math" : "");
+      content.style.fontSize = "16.5px"; content.appendChild(clean(html));
+      b.appendChild(letter); b.appendChild(content);
+      var out = elim.indexOf(L) >= 0;
+      if (P.answer === L) b.classList.add("selected");
+      if (out && !review) b.classList.add("out");
+      if (review) {
+        var tag = null;
+        if (correct.indexOf(L) >= 0) { b.classList.add("correct"); tag = "Correct answer"; }
+        else if (P.answer === L) { b.classList.add("wrong"); tag = "Your answer"; }
+        if (tag) { var t = document.createElement("span"); t.className = "tag"; t.textContent = tag; content.appendChild(t); }
+      }
+      if (locked) b.disabled = true;
+      else b.addEventListener("click", function () { pick(L); });
+      row.appendChild(b);
+      if (!locked) {
+        var s = document.createElement("button"); s.type = "button";
+        s.className = "strike" + (out ? " undo" : ""); s.textContent = out ? "Undo" : L;
+        s.title = out ? "Restore choice " + L : "Cross out choice " + L;
+        s.addEventListener("click", function () { strike(L); });
+        row.appendChild(s);
+      }
+      box.appendChild(row);
+    });
+  }
+
+  function pick(L) {
+    var elim = (P.eliminated || []).slice();
+    var at = elim.indexOf(L);
+    if (at >= 0) { elim.splice(at, 1); P.eliminated = elim; send({ type: "eliminated", value: elim }); }
+    P.answer = L; send({ type: "answer", value: L });
+    P.resetScroll = false; renderChoices(null, false);
+  }
+  function strike(L) {
+    var elim = (P.eliminated || []).slice();
+    var at = elim.indexOf(L);
+    if (at >= 0) elim.splice(at, 1);
+    else { elim.push(L); if (P.answer === L) { P.answer = null; send({ type: "answer", value: null }); } }
+    P.eliminated = elim; send({ type: "eliminated", value: elim });
+    renderChoices(null, false);
+  }
+
+  function renderSpr(review, locked) {
+    var entry = $("sprEntry"), rv = $("sprReview"), input = $("sprInput");
+    if (review) {
+      entry.hidden = true; rv.hidden = false; rv.replaceChildren();
+      var blank = P.answer == null || P.answer === "";
+      var add = function (k, val, cls) {
+        var a = document.createElement("div"); a.className = "k"; a.textContent = k;
+        var b = document.createElement("div"); b.className = "v " + (cls || ""); b.textContent = val;
+        rv.appendChild(a); rv.appendChild(b);
+      };
+      add("Your answer", blank ? "—" : P.answer, blank ? "" : review.isCorrect ? "ok" : "no");
+      add("Accepted answer" + ((review.correct || []).length > 1 ? "s" : ""), (review.correct || []).join("  or  ") || "—", "ok");
+    } else {
+      entry.hidden = false; rv.hidden = true;
+      input.value = P.answer || ""; input.disabled = locked; $("sprShown").textContent = P.answer || "";
+    }
+  }
+  $("sprInput").addEventListener("input", function (e) {
+    var raw = e.target.value.replace(/[^0-9.\/\-]/g, "");
+    var neg = raw.charAt(0) === "-";
+    raw = (neg ? "-" : "") + raw.replace(/-/g, "");
+    raw = raw.slice(0, neg ? 6 : 5);
+    if (raw !== e.target.value) e.target.value = raw;
+    $("sprShown").textContent = raw;
+    if (P) { P.answer = raw || null; send({ type: "answer", value: raw || null }); }
+  });
+
+  $("markBtn").addEventListener("click", function () {
+    if (!P) return; P.marked = !P.marked;
+    $("markBtn").setAttribute("aria-pressed", P.marked ? "true" : "false");
+    send({ type: "mark", value: P.marked });
+  });
+  $("elimBtn").addEventListener("click", function () {
+    elimMode = !elimMode;
+    $("elimBtn").setAttribute("aria-pressed", elimMode ? "true" : "false");
+    document.body.classList.toggle("elim", elimMode);
+  });
+
+  // Draggable divider between passage and question
+  (function () {
+    var d = $("divider"), dragging = false;
+    d.addEventListener("mousedown", function (e) { dragging = true; document.body.classList.add("dragging"); e.preventDefault(); });
+    window.addEventListener("mousemove", function (e) {
+      if (!dragging) return;
+      var pct = Math.max(28, Math.min(72, (e.clientX / window.innerWidth) * 100));
+      document.documentElement.style.setProperty("--split", pct + "%");
+    });
+    window.addEventListener("mouseup", function () { dragging = false; document.body.classList.remove("dragging"); });
+  })();
+
+  window.Margin = { render: render };
+  send({ type: "ready" });
+})();
+</script>
+</body>
+</html>

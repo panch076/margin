@@ -1,0 +1,16 @@
+# .NET
+bin/
+obj/
+out/
+*.user
+
+# Swift
+.build/
+.swiftpm/
+*.xcodeproj/
+Margin.app/
+DerivedData/
+
+# OS
+.DS_Store
+Thumbs.db
