@@ -54,7 +54,14 @@ jobs:
           if-no-files-found: error
 
   macos:
-    runs-on: macos-26
+    # GitHub's Apple silicon runners are often short on capacity, so the build is attempted on both kinds
+    # of macOS 26 runner. Each one produces the same universal app; the release needs only one to finish.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-26, macos-26-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain
@@ -92,12 +99,13 @@ jobs:
           mkdir -p ../dist && mv Margin-*.dmg ../dist/
       - uses: actions/upload-artifact@v4
         with:
-          name: macos
+          name: macos-${{ matrix.runner }}
           path: dist/*
           if-no-files-found: error
 
   release:
-    if: github.event_name == 'workflow_dispatch'
+    # Runs when the workflow is started by hand, once Windows has built and at least one macOS build has finished.
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && needs.windows.result == 'success' }}
     needs: [windows, macos]
     runs-on: ubuntu-latest
     permissions:
@@ -122,6 +130,9 @@ jobs:
             echo "::error::Release v$version already exists. Raise the version number first (see README, Releasing a new version)."; exit 1
           fi
           cd dist
+          if ! ls Margin-*.dmg >/dev/null 2>&1; then
+            echo "::error::No macOS disk image was built (see the macos jobs), so nothing was published."; exit 1
+          fi
           sha256sum Margin-* > SHA256SUMS.txt
           cat > ../notes.md <<NOTES
           **Windows:** download \`Margin-Setup-$version.exe\` and run it. It installs for the current user only and adds a Start Menu shortcut. \`Margin-$version-portable.zip\` is the same app as a single exe. Installed copies update themselves from here.
