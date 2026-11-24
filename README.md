@@ -81,6 +81,13 @@ Two things are approximations, because College Board does not publish them: the 
 - The bank is stored as `bank.jsonl`, one raw question per line, and parsed at launch.
 - The icon is drawn in `assets/icon.svg`; `assets/make-icons.py` exports the `.ico` and `.icns` files.
 
+## Gallery
+<img width="2642" height="1718" alt="image" src="https://github.com/user-attachments/assets/0ef5599e-067f-4d42-a3ee-5ec9c5ecdf35" />
+<img width="3276" height="1738" alt="image" src="https://github.com/user-attachments/assets/afc25547-1ad4-4d4c-93f4-57d561a15813" />
+<img width="3262" height="1714" alt="image" src="https://github.com/user-attachments/assets/8253ac25-1dfb-499f-9bd2-440b7a1be484" />
+
+
+
 ## Content
 
 The questions belong to College Board and are copied from its public question bank for your own study. Don't
