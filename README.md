@@ -1,6 +1,7 @@
 <img src="assets/icon-256.png" width="96" alt="Margin icon">
 
 # Margin
+(slop btw)
 
 SAT practice on your own computer: keep a local copy of College Board's public question bank, build quizzes
 from the questions you pick, and sit timed adaptive practice tests in a digital-test-style interface.
