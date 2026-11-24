@@ -3,6 +3,7 @@ import MarginCore
 
 struct HomeView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         ScrollView {
@@ -11,6 +12,9 @@ struct HomeView: View {
                     Text("Margin").font(.system(size: 34, weight: .bold))
                     Text("Practice with official SAT questions stored on this Mac: build your own quizzes or sit a timed, adaptive practice test.")
                         .foregroundStyle(.secondary)
+                }
+                if let update = model.update {
+                    updateCard(update)
                 }
                 bankCard
                 HStack(alignment: .top, spacing: 18) {
@@ -28,6 +32,19 @@ struct HomeView: View {
                     Text(statsText).foregroundStyle(.secondary)
                 }
                 .glassCard()
+                HStack(spacing: 12) {
+                    Text("Version \(Updater.currentVersion)")
+                    Button("Check for Updates") {
+                        Task { await model.checkForUpdate(manual: true) }
+                    }
+                    .controlSize(.small)
+                    .disabled(model.checkingForUpdate)
+                    if let status = model.updateStatus {
+                        Text(status)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 Text("Questions are College Board's and are copied from its public question bank for your personal study. Margin is not affiliated with or endorsed by College Board. SAT is a trademark of College Board.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -38,6 +55,26 @@ struct HomeView: View {
         }
         .background(Backdrop())
         .navigationTitle("Home")
+    }
+
+    private func updateCard(_ update: UpdateInfo) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            CardTitle("Margin \(update.version) is available")
+            Text(updateNotes(update))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("View Release") { openURL(update.pageURL) }
+                .buttonStyle(.glassProminent)
+                .controlSize(.large)
+        }
+        .glassCard()
+    }
+
+    private func updateNotes(_ update: UpdateInfo) -> String {
+        var notes = update.notes.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "`", with: "")
+        if notes.count > 320 { notes = String(notes.prefix(320)).trimmingCharacters(in: .whitespacesAndNewlines) + "…" }
+        let howTo = "You have version \(Updater.currentVersion). Download the new disk image from the release page and replace Margin in Applications."
+        return notes.isEmpty ? howTo : notes + "\n\n" + howTo
     }
 
     private var bankCard: some View {

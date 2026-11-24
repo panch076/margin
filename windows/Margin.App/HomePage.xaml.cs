@@ -14,7 +14,36 @@ public partial class HomePage : UserControl
         _main = main;
         InitializeComponent();
         RefreshText();
+        _main.UpdateChanged += RefreshUpdate;
+        RefreshUpdate();
     }
+
+    /// Called when another page replaces this one.
+    public void Detach() => _main.UpdateChanged -= RefreshUpdate;
+
+    private void RefreshUpdate()
+    {
+        VersionText.Text = "Version " + UpdateService.CurrentText;
+        UpdateStatusText.Text = _main.UpdateStatus;
+        CheckButton.IsEnabled = !_main.UpdateBusy;
+        var update = _main.Update;
+        if (update is null) { UpdateCard.Visibility = Visibility.Collapsed; return; }
+
+        var canInstall = UpdateService.IsInstalledCopy && update.InstallerUrl is not null;
+        UpdateCard.Visibility = Visibility.Visible;
+        UpdateTitle.Text = $"Margin {update.Version} is available";
+        var notes = update.Notes.Replace("\r", "").Replace("**", "").Replace("`", "");
+        if (notes.Length > 320) notes = notes[..320].TrimEnd() + "…";
+        UpdateNotes.Text = notes.Length > 0 ? notes : $"You have version {UpdateService.CurrentText}.";
+        UpdateButton.Content = canInstall ? "Update and restart" : "Get it from GitHub";
+        UpdateButton.IsEnabled = !_main.UpdateBusy;
+        UpdateProgress.Visibility = _main.UpdateBusy ? Visibility.Visible : Visibility.Collapsed;
+        UpdateProgress.Value = _main.UpdateFraction;
+    }
+
+    private async void Update_Click(object sender, RoutedEventArgs e) => await _main.InstallUpdateAsync();
+    private async void CheckUpdates_Click(object sender, RoutedEventArgs e) => await _main.CheckForUpdateAsync(manual: true);
+    private void ReleaseNotes_Click(object sender, RoutedEventArgs e) => UpdateService.OpenPage(_main.Update?.PageUrl ?? Updater.ReleasesPage);
 
     private void RefreshText()
     {

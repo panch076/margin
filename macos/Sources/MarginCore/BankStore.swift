@@ -97,14 +97,52 @@ public enum BankStore {
     /// Performs one request and returns the body and HTTP status. Replaceable so the downloader can be tested offline.
     public typealias Transport = @Sendable (URLRequest) async throws -> (Data, Int)
 
+    /// How many questions are fetched at the same time.
+    public static let defaultParallel = 20
+
+    /// Base pauses, in seconds, for retries and for backing off when the server says to slow down.
+    /// Tests shorten them.
+    public static var retryBaseSeconds = 0.5
+    public static var throttleBaseSeconds = 2.0
+
+    /// A session of its own: the shared one allows only a handful of connections per host,
+    /// which would cap the download no matter how many workers run.
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpMaximumConnectionsPerHost = defaultParallel
+        config.timeoutIntervalForRequest = 60
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.httpShouldSetCookies = false
+        return URLSession(configuration: config)
+    }()
+
     public static let defaultTransport: Transport = { request in
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<(Data, Int), Error>) in
-            let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            let task = session.dataTask(with: request) { data, response, error in
                 if let error { cont.resume(throwing: error); return }
                 cont.resume(returning: (data ?? Data(), (response as? HTTPURLResponse)?.statusCode ?? 0))
             }
             task.resume()
         }
+    }
+
+    /// Shared pause: when the server answers "too many requests", every worker waits, not just the one that was told.
+    private actor Throttle {
+        private var resumeAt = Date.distantPast
+        private var strikes = 0
+
+        func waitIfNeeded() async {
+            let wait = min(30, resumeAt.timeIntervalSinceNow)
+            if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+        }
+
+        func slowDown() {
+            strikes = min(strikes + 1, 5)
+            let delay = min(30, BankStore.throttleBaseSeconds * pow(2, Double(strikes - 1)))
+            resumeAt = max(resumeAt, Date().addingTimeInterval(delay))
+        }
+
+        func recovered() { strikes = 0 }
     }
 
     private struct Todo: Sendable {
@@ -127,9 +165,14 @@ public enum BankStore {
         return r
     }
 
-    /// Fetches one question body and returns it as compact single-line JSON, or nil after three failed attempts.
-    private static func fetchDetail(_ item: Todo, _ transport: Transport) async -> String? {
-        for attempt in 0..<3 {
+    /// One question body as compact single-line JSON, or nil if it could not be fetched. Network errors and
+    /// server errors are retried a couple of times; "slow down" answers pause every worker and do not count
+    /// as a failure; other client errors (a question that no longer exists) give up at once.
+    private static func fetchDetail(_ item: Todo, _ transport: Transport, _ throttle: Throttle) async -> String? {
+        var attempts = 0
+        var throttled = 0
+        while attempts < 3 && throttled < 8 {
+            await throttle.waitIfNeeded()
             if Task.isCancelled { return nil }
             do {
                 let req: URLRequest
@@ -144,38 +187,60 @@ public enum BankStore {
                     let node = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
                     if node is [String: Any] || node is [Any] {
                         let compact = try JSONSerialization.data(withJSONObject: node)
-                        if let s = String(data: compact, encoding: .utf8) { return s }
+                        if let s = String(data: compact, encoding: .utf8) {
+                            await throttle.recovered()
+                            return s
+                        }
                     }
+                } else if status == 429 || status == 503 {
+                    throttled += 1
+                    await throttle.slowDown()
+                    continue
+                } else if (400..<500).contains(status) && status != 408 {
+                    return nil
                 }
-            } catch { /* retry below */ }
-            try? await Task.sleep(nanoseconds: UInt64(1 + attempt * 2) * 1_000_000_000)
+            } catch { /* retried below */ }
+            attempts += 1
+            if attempts < 3 { try? await Task.sleep(nanoseconds: UInt64(retryBaseSeconds * Double(attempts) * 1_000_000_000)) }
         }
         return nil
     }
 
+    private static func saveLookup(_ transport: Transport) async {
+        guard let req = try? request(api + "/lookup"), let (data, status) = try? await transport(req),
+              (200..<300).contains(status), (try? JSONSerialization.jsonObject(with: data)) is [String: Any] else { return }
+        try? data.write(to: lookupURL, options: .atomic)
+    }
+
+    private static func questionList(test: Int, domains: String, _ transport: Transport) async throws -> Data {
+        let body: [String: Any] = ["asmtEventId": 99, "test": test, "domain": domains]
+        let (data, status) = try await transport(try request(api + "/digital/get-questions", json: body))
+        guard (200..<300).contains(status) else { throw BankError(message: "The question bank answered with an error (\(status)).") }
+        return data
+    }
+
     /// Downloads every question not yet stored. Safe to cancel and run again.
-    public static func download(parallel: Int = 6,
+    public static func download(parallel: Int = defaultParallel,
                                 transport: @escaping Transport = defaultTransport,
                                 progress: @escaping @Sendable (DownloadProgress) -> Void = { _ in }) async throws -> DownloadSummary {
         try FileManager.default.createDirectory(at: dataDir, withIntermediateDirectories: true)
         progress(DownloadProgress(stage: "Reading the question list", done: 0, total: 0, failed: 0))
 
-        if let (data, status) = try? await transport(try request(api + "/lookup")), (200..<300).contains(status),
-           (try? JSONSerialization.jsonObject(with: data)) is [String: Any] {
-            try? data.write(to: lookupURL, options: .atomic)
-        }
+        // The practice-test list and the two question lists are independent, so ask for all three at once.
+        async let lookupSaved: Void = saveLookup(transport)
+        async let rwList = questionList(test: 1, domains: "INI,CAS,EOI,SEC", transport)
+        async let mathList = questionList(test: 2, domains: "H,P,Q,S", transport)
+        let lists = try await [rwList, mathList]
+        await lookupSaved
         try Task.checkCancellation()
 
+        // Each list is kept as raw JSON until here, because parsed JSON cannot cross between tasks.
         var stubs: [(Int, [String: Any])] = []
-        for (test, domains) in [(1, "INI,CAS,EOI,SEC"), (2, "H,P,Q,S")] {
-            let body: [String: Any] = ["asmtEventId": 99, "test": test, "domain": domains]
-            let (data, status) = try await transport(try request(api + "/digital/get-questions", json: body))
-            guard (200..<300).contains(status) else { throw BankError(message: "The question bank answered with an error (\(status)).") }
+        for (index, data) in lists.enumerated() {
             guard let list = try JSONSerialization.jsonObject(with: data) as? [Any] else {
                 throw BankError(message: "The question list came back in an unexpected format.")
             }
-            for case let o as [String: Any] in list { stubs.append((test, o)) }
-            try Task.checkCancellation()
+            for case let o as [String: Any] in list { stubs.append((index + 1, o)) }
         }
 
         let have = storedIds()
@@ -201,11 +266,13 @@ public enum BankStore {
         defer { try? handle.close() }
         try handle.seekToEnd()
 
+        let throttle = Throttle()
+        let workers = min(max(1, parallel), 64, total)
         try await withThrowingTaskGroup(of: (Int, String?).self) { group in
             var next = 0
-            while next < min(max(1, parallel), total) {
+            while next < workers {
                 let i = next; let item = todo[i]; next += 1
-                group.addTask { (i, await fetchDetail(item, transport)) }
+                group.addTask { (i, await fetchDetail(item, transport, throttle)) }
             }
             while let (i, detail) = try await group.next() {
                 if let detail {
@@ -215,13 +282,13 @@ public enum BankStore {
                     failed += 1
                 }
                 done += 1
-                if done % 5 == 0 || done == total {
+                if done % 10 == 0 || done == total {
                     progress(DownloadProgress(stage: "Downloading questions", done: done, total: total, failed: failed))
                 }
                 try Task.checkCancellation()
                 if next < total {
                     let j = next; let item = todo[j]; next += 1
-                    group.addTask { (j, await fetchDetail(item, transport)) }
+                    group.addTask { (j, await fetchDetail(item, transport, throttle)) }
                 }
             }
         }

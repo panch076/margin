@@ -85,35 +85,102 @@ public static class BankStore
         return ids;
     }
 
-    /// Downloads every question not yet stored. Safe to cancel and run again.
-    public static async Task<DownloadSummary> DownloadAsync(
-        IProgress<DownloadProgress>? progress, CancellationToken ct, HttpMessageHandler? handler = null, int parallel = 6)
+    /// How many questions are fetched at the same time.
+    public const int DefaultParallel = 20;
+
+    /// Base pauses, in seconds, for retries and for backing off when the server says to slow down.
+    /// Tests shorten them.
+    public static double RetryBaseSeconds { get; set; } = 0.5;
+    public static double ThrottleBaseSeconds { get; set; } = 2.0;
+
+    /// Shared pause: when the server answers "too many requests", every worker waits, not just the one that was told.
+    private sealed class Throttle
     {
-        Directory.CreateDirectory(DataDir);
-        using var http = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: false);
+        private long _resumeAt;     // Environment.TickCount64 before which no request should start
+        private int _strikes;
+
+        public async Task WaitAsync(CancellationToken ct)
+        {
+            var wait = Interlocked.Read(ref _resumeAt) - Environment.TickCount64;
+            if (wait > 0) await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(wait, 30_000)), ct);
+        }
+
+        public void SlowDown()
+        {
+            var strikes = Math.Min(Interlocked.Increment(ref _strikes), 5);
+            var delayMs = (long)(Math.Min(30, ThrottleBaseSeconds * Math.Pow(2, strikes - 1)) * 1000);
+            var until = Environment.TickCount64 + delayMs;
+            long seen;
+            do { seen = Interlocked.Read(ref _resumeAt); }
+            while (until > seen && Interlocked.CompareExchange(ref _resumeAt, until, seen) != seen);
+        }
+
+        public void Recovered() => Interlocked.Exchange(ref _strikes, 0);
+    }
+
+    private static HttpClient CreateClient(HttpMessageHandler? handler, int parallel)
+    {
+        HttpClient http;
+        if (handler is not null)
+        {
+            http = new HttpClient(handler, disposeHandler: false);
+        }
+        else
+        {
+            // Compressed responses, HTTP/2 where the server offers it, and enough connections for every worker otherwise.
+            var sockets = new SocketsHttpHandler
+            {
+                AutomaticDecompression = System.Net.DecompressionMethods.All,
+                MaxConnectionsPerServer = Math.Max(parallel, 2),
+                EnableMultipleHttp2Connections = true,
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
+            };
+            http = new HttpClient(sockets, disposeHandler: true)
+            {
+                DefaultRequestVersion = System.Net.HttpVersion.Version20,
+                DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
+            };
+        }
         http.Timeout = TimeSpan.FromSeconds(60);
         http.DefaultRequestHeaders.UserAgent.ParseAdd("Margin/1.0");
         http.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+        return http;
+    }
+
+    /// Downloads every question not yet stored. Safe to cancel and run again.
+    public static async Task<DownloadSummary> DownloadAsync(
+        IProgress<DownloadProgress>? progress, CancellationToken ct, HttpMessageHandler? handler = null, int parallel = DefaultParallel)
+    {
+        Directory.CreateDirectory(DataDir);
+        parallel = Math.Clamp(parallel, 1, 64);
+        using var http = CreateClient(handler, parallel);
 
         progress?.Report(new DownloadProgress("Reading the question list", 0, 0, 0));
-        try
-        {
-            var lookup = await http.GetStringAsync(Api + "/lookup", ct);
-            if (JsonNode.Parse(lookup) is JsonObject) await File.WriteAllTextAsync(LookupPath, lookup, ct);
-        }
-        catch (Exception e) when (e is not OperationCanceledException) { /* optional */ }
 
-        var stubs = new List<(int Test, JsonObject Stub)>();
-        foreach (var (test, domains) in new[] { (1, "INI,CAS,EOI,SEC"), (2, "H,P,Q,S") })
+        // The practice-test list and the two question lists are independent, so ask for all three at once.
+        async Task SaveLookup()
+        {
+            try
+            {
+                var lookup = await http.GetStringAsync(Api + "/lookup", ct);
+                if (JsonNode.Parse(lookup) is JsonObject) await File.WriteAllTextAsync(LookupPath, lookup, ct);
+            }
+            catch (Exception e) when (e is not OperationCanceledException) { /* optional */ }
+        }
+        async Task<List<(int Test, JsonObject Stub)>> List(int test, string domains)
         {
             using var resp = await http.PostAsJsonAsync(Api + "/digital/get-questions",
                 new { asmtEventId = 99, test, domain = domains }, ct);
             resp.EnsureSuccessStatusCode();
             var list = JsonNode.Parse(await resp.Content.ReadAsStringAsync(ct)) as JsonArray
                        ?? throw new InvalidDataException("The question list came back in an unexpected format.");
-            foreach (var n in list)
-                if (n is JsonObject o) stubs.Add((test, o));
+            return list.OfType<JsonObject>().Select(o => (test, o)).ToList();
         }
+        var lookupTask = SaveLookup();
+        var rwTask = List(1, "INI,CAS,EOI,SEC");
+        var mathTask = List(2, "H,P,Q,S");
+        await Task.WhenAll(lookupTask, rwTask, mathTask);
+        var stubs = rwTask.Result.Concat(mathTask.Result).ToList();
 
         var have = StoredIds();
         var keys = new HashSet<string>();
@@ -129,52 +196,79 @@ public static class BankStore
 
         int done = 0, failed = 0, total = todo.Count;
         progress?.Report(new DownloadProgress("Downloading questions", 0, total, 0));
+        if (total == 0) return new DownloadSummary(0, 0, stubs.Count);
+
+        var throttle = new Throttle();
         var writeLock = new SemaphoreSlim(1, 1);
-        await using var writer = new StreamWriter(new FileStream(BankPath, FileMode.Append, FileAccess.Write, FileShare.Read), new UTF8Encoding(false));
+        // Lines are buffered and flushed every so often. Anything lost in a crash is simply fetched again next time.
+        await using var writer = new StreamWriter(new FileStream(BankPath, FileMode.Append, FileAccess.Write, FileShare.Read), new UTF8Encoding(false), 1 << 16);
+        var unflushed = 0;
 
         await Parallel.ForEachAsync(todo, new ParallelOptions { MaxDegreeOfParallelism = parallel, CancellationToken = ct }, async (item, token) =>
         {
-            JsonNode? detail = null;
-            for (var attempt = 0; attempt < 3 && detail is null; attempt++)
-            {
-                try
-                {
-                    detail = await FetchDetail(http, item.Stub, token);
-                }
-                catch (Exception e) when (e is not OperationCanceledException || !token.IsCancellationRequested)
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(1 + attempt * 2), token);
-                }
-            }
+            var detail = await FetchWithRetry(http, item.Stub, throttle, token);
             if (detail is null) { Interlocked.Increment(ref failed); }
             else
             {
                 var line = new JsonObject { ["test"] = item.Test, ["stub"] = item.Stub.DeepClone(), ["detail"] = detail };
                 var text = line.ToJsonString();
                 await writeLock.WaitAsync(token);
-                try { await writer.WriteLineAsync(text); await writer.FlushAsync(token); }
+                try
+                {
+                    await writer.WriteLineAsync(text);
+                    if (++unflushed >= 25) { unflushed = 0; await writer.FlushAsync(token); }
+                }
                 finally { writeLock.Release(); }
             }
             var d = Interlocked.Increment(ref done);
-            if (d % 5 == 0 || d == total) progress?.Report(new DownloadProgress("Downloading questions", d, total, Volatile.Read(ref failed)));
+            if (d % 10 == 0 || d == total) progress?.Report(new DownloadProgress("Downloading questions", d, total, Volatile.Read(ref failed)));
         });
 
         return new DownloadSummary(total - failed, failed, stubs.Count);
     }
 
-    private static async Task<JsonNode?> FetchDetail(HttpClient http, JsonObject stub, CancellationToken ct)
+    /// One question body, or null if it could not be fetched. Network errors and server errors are retried
+    /// a couple of times; "slow down" answers pause every worker and do not count as a failure; other
+    /// client errors (a question that no longer exists) give up at once.
+    private static async Task<JsonNode?> FetchWithRetry(HttpClient http, JsonObject stub, Throttle throttle, CancellationToken ct)
     {
         var ext = NonEmpty(stub["external_id"]?.ToString());
-        if (ext is not null)
-        {
-            using var resp = await http.PostAsJsonAsync(Api + "/digital/get-question", new { external_id = ext }, ct);
-            resp.EnsureSuccessStatusCode();
-            return JsonNode.Parse(await resp.Content.ReadAsStringAsync(ct));
-        }
         var ibn = NonEmpty(stub["ibn"]?.ToString());
-        if (ibn is null) return null;
-        var body = await http.GetStringAsync(Disclosed + Uri.EscapeDataString(ibn) + ".json", ct);
-        return JsonNode.Parse(body);
+        if (ext is null && ibn is null) return null;
+
+        int attempts = 0, throttled = 0;
+        while (attempts < 3 && throttled < 8)
+        {
+            await throttle.WaitAsync(ct);
+            try
+            {
+                using var resp = ext is not null
+                    ? await http.PostAsJsonAsync(Api + "/digital/get-question", new { external_id = ext }, ct)
+                    : await http.GetAsync(Disclosed + Uri.EscapeDataString(ibn!) + ".json", ct);
+                var status = (int)resp.StatusCode;
+                if (resp.IsSuccessStatusCode)
+                {
+                    var node = JsonNode.Parse(await resp.Content.ReadAsStringAsync(ct));
+                    if (node is JsonObject or JsonArray) { throttle.Recovered(); return node; }
+                }
+                else if (status is 429 or 503)
+                {
+                    throttled++;
+                    throttle.SlowDown();
+                    continue;
+                }
+                else if (status is >= 400 and < 500 and not 408)
+                {
+                    return null;
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception) { /* retried below */ }
+
+            attempts++;
+            if (attempts < 3) await Task.Delay(TimeSpan.FromSeconds(RetryBaseSeconds * attempts), ct);
+        }
+        return null;
     }
 
     private static string? NonEmpty(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;

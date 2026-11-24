@@ -180,6 +180,8 @@ final class Fake: @unchecked Sendable {
 do {
     let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("margin-test-\(UUID().uuidString)")
     BankStore.dataDir = dir
+    BankStore.retryBaseSeconds = 0.01
+    BankStore.throttleBaseSeconds = 0.02
     let fake = Fake()
     let transport: BankStore.Transport = { req in fake.respond(req) }
     let first = try await BankStore.download(transport: transport)
@@ -201,6 +203,99 @@ do {
     try? FileManager.default.removeItem(at: dir)
 } catch {
     check(false, "downloader threw: \(error)")
+}
+
+// ---------- downloader under load: concurrency, "slow down" answers, missing questions ----------
+final class LoadFake: @unchecked Sendable {
+    let lock = NSLock()
+    let count: Int
+    let throttleFirst: Int
+    let goneId: String?
+    var inFlight = 0, maxInFlight = 0, calls = 0, goneCalls = 0, throttled = 0
+
+    init(count: Int, throttleFirst: Int = 0, goneId: String? = nil) {
+        self.count = count; self.throttleFirst = throttleFirst; self.goneId = goneId
+    }
+
+    private func locked<T>(_ body: () -> T) -> T { lock.lock(); defer { lock.unlock() }; return body() }
+
+    func respond(_ req: URLRequest) async -> (Data, Int) {
+        let url = req.url?.absoluteString ?? ""
+        let body = String(data: req.httpBody ?? Data(), encoding: .utf8) ?? ""
+        if url.hasSuffix("/lookup") { return (Data("{}".utf8), 200) }
+        if url.hasSuffix("/get-questions") {
+            if !body.contains("\"test\":1") { return (Data("[]".utf8), 200) }
+            let items = (0..<count).map { #"{"questionId":"q\#($0)","external_id":"e-\#($0)","primary_class_cd":"CAS","skill_desc":"Words in Context","difficulty":"M","score_band_range_cd":4}"# }
+            return (Data(("[" + items.joined(separator: ",") + "]").utf8), 200)
+        }
+        locked { inFlight += 1; maxInFlight = max(maxInFlight, inFlight) }
+        try? await Task.sleep(nanoseconds: 25_000_000)
+        return locked {
+            inFlight -= 1
+            if let goneId, body.contains("\"" + goneId + "\"") { goneCalls += 1; return (Data(), 404) }
+            calls += 1
+            if calls <= throttleFirst { throttled += 1; return (Data(), 429) }
+            return (Data(#"{"stem":"<p>q</p>","type":"mcq","rationale":"r","answerOptions":[{"id":"1","content":"a"},{"id":"2","content":"b"},{"id":"3","content":"c"},{"id":"4","content":"d"}],"correct_answer":["A"]}"#.utf8), 200)
+        }
+    }
+}
+do {
+    let base = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("margin-load-\(UUID().uuidString)")
+    BankStore.dataDir = base
+    let load = LoadFake(count: 120, throttleFirst: 15, goneId: "e-7")
+    let sum = try await BankStore.download(parallel: 20, transport: { await load.respond($0) })
+    check(sum.added == 119 && sum.failed == 1, "load: added \(sum.added) failed \(sum.failed)")
+    check(load.maxInFlight > 6 && load.maxInFlight <= 20, "load: ran in parallel, peak \(load.maxInFlight)")
+    check(load.goneCalls == 1, "a question that no longer exists is not retried, calls \(load.goneCalls)")
+    check(load.throttled == 15, "every throttled request was retried, saw \(load.throttled)")
+    check(BankStore.load().questions.count == 119, "load: bank has everything that exists")
+    try? FileManager.default.removeItem(at: base)
+
+    func timed(parallel: Int, suffix: String) async throws -> (ms: Int, peak: Int) {
+        BankStore.dataDir = base.appendingPathExtension(suffix)
+        let fake = LoadFake(count: 120)
+        let start = Date()
+        _ = try await BankStore.download(parallel: parallel, transport: { await fake.respond($0) })
+        let ms = Int(Date().timeIntervalSince(start) * 1000)
+        try? FileManager.default.removeItem(at: BankStore.dataDir)
+        return (ms, fake.maxInFlight)
+    }
+    let before = try await timed(parallel: 6, suffix: "b")
+    let after = try await timed(parallel: 20, suffix: "c")
+    print("  120 questions at 25 ms each: 6 at a time \(before.ms) ms, 20 at a time \(after.ms) ms")
+    check(after.ms * 2 < before.ms && before.peak <= 6, "20 at a time is at least twice as fast as 6")
+} catch {
+    check(false, "load test threw: \(error)")
+}
+
+// ---------- updater ----------
+do {
+    check(Updater.parseVersion("v1.2.3") == [1, 2, 3] && Updater.parseVersion("1.4") == [1, 4, 0] && Updater.parseVersion("v2.0.1-beta") == [2, 0, 1]
+          && Updater.parseVersion("latest") == nil && Updater.parseVersion(nil) == nil, "version parsing")
+    check(Updater.isNewer([1, 0, 1], than: [1, 0, 0]) && Updater.isNewer([1, 10, 0], than: [1, 9, 9]) && !Updater.isNewer([1, 0, 0], than: [1, 0, 0]) && !Updater.isNewer([0, 9, 9], than: [1, 0, 0]), "version ordering")
+
+    func site(_ body: String, status: Int = 200) -> BankStore.Transport {
+        { req in
+            guard req.url?.absoluteString.hasSuffix("/releases/latest") == true else { return (Data(), 404) }
+            return (Data(body.utf8), status)
+        }
+    }
+    let release = #"{"tag_name":"v1.1.0","draft":false,"prerelease":false,"html_url":"https://github.com/panch076/margin/releases/tag/v1.1.0","body":"What changed\n- faster\n","assets":[]}"#
+    let found = await Updater.check(current: "1.0.0", transport: site(release))
+    check(found?.version == "1.1.0" && found?.tag == "v1.1.0" && found?.notes.hasPrefix("What changed") == true
+          && found?.pageURL.absoluteString == "https://github.com/panch076/margin/releases/tag/v1.1.0", "finds a newer release")
+    let current = await Updater.check(current: "1.1.0", transport: site(release))
+    let ahead = await Updater.check(current: "2.0", transport: site(release))
+    check(current == nil && ahead == nil, "no update when already current or ahead")
+    let none = await Updater.check(current: "1.0.0", transport: site("{}", status: 404))
+    let garbage = await Updater.check(current: "1.0.0", transport: site("<html>"))
+    let offline = await Updater.check(current: "1.0.0", transport: { _ in throw URLError(.notConnectedToInternet) })
+    check(none == nil && garbage == nil && offline == nil, "no releases, garbage and offline are not errors")
+    let draft = await Updater.check(current: "1.0.0", transport: site(release.replacingOccurrences(of: #""prerelease":false"#, with: #""prerelease":true"#)))
+    check(draft == nil, "pre-releases are skipped")
+    let odd = await Updater.check(current: "1.0.0", transport: site(release.replacingOccurrences(of: "https://github.com/panch076/margin/releases/tag/v1.1.0", with: "https://example.com/x")))
+    check(odd?.pageURL == Updater.releasesPage, "a link pointing anywhere else falls back to the releases page")
+    check(Updater.parseVersion(Updater.currentVersion) != nil, "this build's own version parses")
 }
 
 print("\(pass) passed, \(fail) failed")

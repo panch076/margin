@@ -64,6 +64,24 @@ final class AppModel {
     func loadAll() async {
         history = HistoryStore.load()
         await reloadBank()
+        await checkForUpdate(manual: false)
+    }
+
+    // MARK: updates
+
+    var update: UpdateInfo?
+    var updateStatus: String?
+    var checkingForUpdate = false
+
+    /// Asks GitHub whether a newer release exists. Quiet at launch; reports "up to date" when asked for by hand.
+    func checkForUpdate(manual: Bool) async {
+        guard !checkingForUpdate else { return }
+        checkingForUpdate = true
+        if manual { updateStatus = "Checking…" }
+        let found = await Updater.check()
+        update = found
+        updateStatus = (found == nil && manual) ? "Margin \(Updater.currentVersion) is the latest version." : nil
+        checkingForUpdate = false
     }
 
     func reloadBank() async {

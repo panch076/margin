@@ -4,6 +4,7 @@
 ;   makensis -DVERSION=1.0.0 -DEXE=..\out\Margin.exe Margin.nsi
 ;
 ; Installs for the current user only, so it never asks for administrator rights.
+; Run with /S for a silent install: the app's updater does this, and the new version opens afterwards.
 
 Unicode true
 ManifestDPIAware true
@@ -54,6 +55,23 @@ VIAddVersionKey "LegalCopyright" ""
 
 Section "Margin" SecApp
   SectionIn RO
+
+  ; When the app updates itself it starts this installer and then exits.
+  ; Wait (up to about 15 seconds) until the old Margin.exe is no longer in use.
+  StrCpy $0 0
+  wait_for_exit:
+    IfFileExists "$INSTDIR\Margin.exe" 0 ready
+    ClearErrors
+    FileOpen $1 "$INSTDIR\Margin.exe" a
+    IfErrors 0 unlocked
+    IntOp $0 $0 + 1
+    IntCmp $0 60 ready
+    Sleep 250
+    Goto wait_for_exit
+  unlocked:
+    FileClose $1
+  ready:
+
   SetOutPath "$INSTDIR"
   File "/oname=Margin.exe" "${EXE}"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
@@ -72,8 +90,16 @@ Section "Margin" SecApp
 SectionEnd
 
 Section "Desktop shortcut" SecDesktop
+  ; A silent run is an update: leave the desktop the way the user has it.
+  IfSilent +2
   CreateShortcut "$DESKTOP\${APPNAME}.lnk" "$INSTDIR\Margin.exe"
 SectionEnd
+
+; After a silent install (an in-app update), open the new version.
+Function .onInstSuccess
+  IfSilent 0 +2
+  Exec '"$INSTDIR\Margin.exe"'
+FunctionEnd
 
 Section "Uninstall"
   Delete "$INSTDIR\Margin.exe"

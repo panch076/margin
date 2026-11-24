@@ -159,6 +159,8 @@ var big = Synthetic(60, 1);
 {
     var dir = Path.Combine(Path.GetTempPath(), "margin-test-" + Guid.NewGuid().ToString("N"));
     BankStore.DataDir = dir;
+    BankStore.RetryBaseSeconds = 0.01;
+    BankStore.ThrottleBaseSeconds = 0.02;
     var fake = new FakeBank();
     var first = await BankStore.DownloadAsync(null, CancellationToken.None, fake);
     Check(first.Added == 5 && first.Failed == 1, $"first run: added {first.Added} failed {first.Failed}");   // 7 stubs: 1 duplicate skipped, 1 fails
@@ -175,6 +177,78 @@ var big = Synthetic(60, 1);
     var back = HistoryStore.Load();
     Check(back.Count == 1 && HistoryStore.MissedIds(back).SetEquals(new[] { "r1" }) && HistoryStore.SeenIds(back).Count == 2, "history round trip");
     Directory.Delete(dir, true);
+}
+
+// ---------- downloader under load: concurrency, "slow down" answers, missing questions ----------
+{
+    var dir = Path.Combine(Path.GetTempPath(), "margin-load-" + Guid.NewGuid().ToString("N"));
+    BankStore.DataDir = dir;
+    var load = new LoadFake { Count = 120, ThrottleFirst = 15, GoneId = "e-7" };
+    var clock = System.Diagnostics.Stopwatch.StartNew();
+    var sum = await BankStore.DownloadAsync(null, CancellationToken.None, load, parallel: 20);
+    var fast = clock.ElapsedMilliseconds;
+    Check(sum.Added == 119 && sum.Failed == 1, $"load: added {sum.Added} failed {sum.Failed}");
+    Check(load.MaxInFlight > 6 && load.MaxInFlight <= 20, "load: ran in parallel, peak " + load.MaxInFlight);
+    Check(load.GoneCalls == 1, "a question that no longer exists is not retried, calls " + load.GoneCalls);
+    Check(load.Throttled == 15, "every throttled request was retried, saw " + load.Throttled);
+    Check(BankStore.Load().Questions.Count == 119, "load: bank has everything that exists");
+    Directory.Delete(dir, true);
+
+    BankStore.DataDir = dir + "-b";
+    var slow = new LoadFake { Count = 120 };
+    clock.Restart();
+    await BankStore.DownloadAsync(null, CancellationToken.None, slow, parallel: 6);
+    var before = clock.ElapsedMilliseconds;
+    BankStore.DataDir = dir + "-c";
+    var quick = new LoadFake { Count = 120 };
+    clock.Restart();
+    await BankStore.DownloadAsync(null, CancellationToken.None, quick, parallel: 20);
+    var after = clock.ElapsedMilliseconds;
+    Console.WriteLine($"  120 questions at 25 ms each: 6 at a time {before} ms, 20 at a time {after} ms");
+    Check(after * 2 < before && slow.MaxInFlight <= 6, "20 at a time is at least twice as fast as 6");
+    Directory.Delete(dir + "-b", true); Directory.Delete(dir + "-c", true);
+}
+
+// ---------- updater ----------
+{
+    Check(Updater.ParseVersion("v1.2.3") == new Version(1, 2, 3) && Updater.ParseVersion("1.4") == new Version(1, 4, 0)
+          && Updater.ParseVersion("v2.0.1-beta") == new Version(2, 0, 1) && Updater.ParseVersion("latest") is null && Updater.ParseVersion(null) is null, "version parsing");
+
+    var payload = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("installer-bytes;", 5000)));
+    var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(payload)).ToLowerInvariant();
+    string Release(string tag, string assetUrl, string digest, long size) => $$"""
+        {"tag_name":"{{tag}}","draft":false,"prerelease":false,"html_url":"https://github.com/panch076/margin/releases/tag/{{tag}}","body":"What changed\n- faster",
+         "assets":[{"name":"Margin-1.0.0-portable.zip","browser_download_url":"https://github.com/panch076/margin/releases/download/{{tag}}/Margin-portable.zip","size":5},
+                   {"name":"Margin-Setup-9.9.9.exe","browser_download_url":"{{assetUrl}}","size":{{size}},"digest":"{{digest}}"}]}
+        """;
+    var good = "https://github.com/panch076/margin/releases/download/v1.1.0/Margin-Setup-9.9.9.exe";
+    var site = new UpdateFake { Latest = Release("v1.1.0", good, "sha256:" + sha, payload.Length), Payload = payload };
+
+    var info = await Updater.CheckAsync(new Version(1, 0, 0, 0), default, site);
+    Check(info is not null && info.Version == new Version(1, 1, 0) && info.InstallerUrl == good && info.Sha256 == sha && info.InstallerSize == payload.Length && info.Notes.StartsWith("What changed"), "finds a newer release with its installer");
+    Check(await Updater.CheckAsync(new Version(1, 1, 0), default, site) is null && await Updater.CheckAsync(new Version(2, 0), default, site) is null, "no update when already current or ahead");
+    Check(await Updater.CheckAsync(new Version(1, 0), default, new UpdateFake { Status = 404 }) is null, "no releases yet is not an error");
+    Check(await Updater.CheckAsync(new Version(1, 0), default, new UpdateFake { Latest = "<html>" }) is null, "garbage answer is not an error");
+    Check(await Updater.CheckAsync(new Version(1, 0), default, new UpdateFake { Throw = true }) is null, "offline is not an error");
+    var foreign = await Updater.CheckAsync(new Version(1, 0), default, new UpdateFake { Latest = Release("v1.1.0", "https://example.com/Margin-Setup-9.9.9.exe", "sha256:" + sha, payload.Length) });
+    Check(foreign is not null && foreign.InstallerUrl is null, "an installer hosted anywhere else is ignored");
+
+    var folder = Path.Combine(Path.GetTempPath(), "margin-upd-" + Guid.NewGuid().ToString("N"));
+    (long Done, long Total) last = default;
+    var path = await Updater.DownloadInstallerAsync(info!, new Progress<(long, long)>(p => last = p), default, site, folder);
+    Check(File.Exists(path) && Path.GetFileName(path) == "Margin-Setup-9.9.9.exe" && File.ReadAllBytes(path).SequenceEqual(payload) && !File.Exists(path + ".part"), "downloads and verifies the installer");
+
+    async Task<bool> Rejects(UpdateInfo i, UpdateFake f)
+    {
+        var dir = Path.Combine(folder, Guid.NewGuid().ToString("N"));
+        try { await Updater.DownloadInstallerAsync(i, null, default, f, dir); return false; }
+        catch (Exception e) when (e is InvalidDataException or InvalidOperationException) { return !Directory.Exists(dir) || Directory.GetFiles(dir).Length == 0; }
+    }
+    Check(await Rejects(info! with { Sha256 = new string('0', 64) }, site), "wrong checksum is rejected and nothing is kept");
+    Check(await Rejects(info!, new UpdateFake { Payload = payload[..100] }), "short download is rejected");
+    Check(await Rejects(foreign!, site), "no installer means nothing to download");
+    Check(await Rejects(info! with { InstallerUrl = "https://example.com/x.exe" }, site), "foreign download address is refused");
+    Directory.Delete(folder, true);
 }
 
 Console.WriteLine($"{pass} passed, {fail} failed");
@@ -210,5 +284,56 @@ sealed class FakeBank : HttpMessageHandler
             return Ok("""[{"prompt":"<p>o</p>","answer":{"style":"Multiple Choice","choices":{"a":{"body":"1"},"b":{"body":"2"},"c":{"body":"3"},"d":{"body":"4"}},"correct_choice":"c","rationale":"x"}}]""");
         }
         return new HttpResponseMessage(HttpStatusCode.NotFound);
+    }
+}
+
+sealed class LoadFake : HttpMessageHandler
+{
+    public int Count = 100, ThrottleFirst, MaxInFlight, GoneCalls, Throttled;
+    public string? GoneId;
+    private int _inFlight, _calls;
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage req, CancellationToken ct)
+    {
+        var url = req.RequestUri!.ToString();
+        var body = req.Content is null ? "" : await req.Content.ReadAsStringAsync(ct);
+        HttpResponseMessage Ok(string s) => new(HttpStatusCode.OK) { Content = new StringContent(s, Encoding.UTF8, "application/json") };
+        if (url.EndsWith("/lookup")) return Ok("{}");
+        if (url.EndsWith("/get-questions"))
+        {
+            if (!body.Contains("\"test\":1")) return Ok("[]");
+            var items = Enumerable.Range(0, Count).Select(i => $"{{\"questionId\":\"q{i}\",\"external_id\":\"e-{i}\",\"primary_class_cd\":\"CAS\",\"skill_desc\":\"Words in Context\",\"difficulty\":\"M\",\"score_band_range_cd\":4}}");
+            return Ok("[" + string.Join(",", items) + "]");
+        }
+        var now = Interlocked.Increment(ref _inFlight);
+        int peak;
+        while (now > (peak = Volatile.Read(ref MaxInFlight)) && Interlocked.CompareExchange(ref MaxInFlight, now, peak) != peak) { }
+        try
+        {
+            await Task.Delay(25, ct);
+            if (GoneId is not null && body.Contains("\"" + GoneId + "\"")) { Interlocked.Increment(ref GoneCalls); return new HttpResponseMessage(HttpStatusCode.NotFound); }
+            if (Interlocked.Increment(ref _calls) <= ThrottleFirst) { Interlocked.Increment(ref Throttled); return new HttpResponseMessage((HttpStatusCode)429); }
+            return Ok("""{"stem":"<p>q</p>","type":"mcq","rationale":"r","answerOptions":[{"id":"1","content":"a"},{"id":"2","content":"b"},{"id":"3","content":"c"},{"id":"4","content":"d"}],"correct_answer":["A"]}""");
+        }
+        finally { Interlocked.Decrement(ref _inFlight); }
+    }
+}
+
+sealed class UpdateFake : HttpMessageHandler
+{
+    public string Latest = "{}";
+    public int Status = 200;
+    public bool Throw;
+    public byte[] Payload = Array.Empty<byte>();
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage req, CancellationToken ct)
+    {
+        if (Throw) throw new HttpRequestException("offline");
+        var url = req.RequestUri!.ToString();
+        if (url.EndsWith("/releases/latest"))
+            return Task.FromResult(new HttpResponseMessage((HttpStatusCode)Status) { Content = new StringContent(Latest, Encoding.UTF8, "application/json") });
+        if (url.Contains("/releases/download/"))
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(Payload) });
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
     }
 }
