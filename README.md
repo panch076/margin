@@ -15,11 +15,11 @@ Two native apps share one design:
 
 ## Status
 
-Early and lightly tested. The engine (parsing, grading, module assembly, routing, scoring, download and resume)
-passes the same self-test in both the Swift and C# versions. The Windows app and its installer compile cleanly
-but have had little hands-on use. The macOS SwiftUI screens have been syntax-checked but not yet built in Xcode,
-so expect to fix a few compiler errors on the first build. The downloader has been exercised against a stand-in
-server, not yet against the live question bank.
+Early and lightly tested. The engine (parsing, grading, module assembly, routing, scoring, download and resume,
+update checks) passes the same self-test in both the Swift and C# versions, and both apps are built and tested
+on GitHub Actions on every push. The macOS app compiles there but has not yet been tried by hand, so expect
+rough edges on first use. The downloader has been exercised against a stand-in server, not yet against the live
+question bank by the test suite.
 
 ## First run
 
