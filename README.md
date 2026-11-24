@@ -1,3 +1,5 @@
+<img src="assets/icon-256.png" width="96" alt="Margin icon">
+
 # Margin
 
 SAT practice on your own computer: keep a local copy of College Board's public question bank, build quizzes
@@ -13,9 +15,9 @@ Two native apps share one design:
 ## Status
 
 Early and lightly tested. The engine (parsing, grading, module assembly, routing, scoring, download and resume)
-passes the same self-test in both the Swift and C# versions. The Windows app compiles cleanly but its screens
-have had little hands-on use. The macOS SwiftUI screens have been syntax-checked but not yet built in Xcode, so
-expect to fix a few compiler errors on the first build. The downloader has been exercised against a stand-in
+passes the same self-test in both the Swift and C# versions. The Windows app and its installer compile cleanly
+but have had little hands-on use. The macOS SwiftUI screens have been syntax-checked but not yet built in Xcode,
+so expect to fix a few compiler errors on the first build. The downloader has been exercised against a stand-in
 server, not yet against the live question bank.
 
 ## First run
@@ -26,17 +28,24 @@ and resumed, and running it again later only fetches questions you don't have ye
 
 ## Windows
 
-The published build is a single self-contained `Margin.exe` (no .NET install needed). It is unsigned, so
-SmartScreen asks once: **More info > Run anyway**. Question text is drawn with the WebView2 runtime, which
-ships with Windows 11 and current Windows 10.
+Download `Margin-Setup-<version>.exe` from [Releases](https://github.com/panch076/margin/releases) and run it.
+It installs for the current user only (no administrator prompt), adds a Start Menu shortcut, and can be removed
+from Settings > Apps. A portable `Margin.exe` is attached to each release too.
+
+The builds are not code-signed, so Windows SmartScreen shows a warning the first time: **More info > Run
+anyway**. Question text is drawn with the WebView2 runtime, which ships with Windows 11 and current Windows 10.
 
 To build it, install the .NET 10 SDK and run in `windows/`:
 
     dotnet run --project Margin.Tests          # engine self-test
     dotnet run --project Margin.App            # run the app
-    dotnet publish Margin.App -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o out
+    dotnet publish Margin.App -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=none -o out
 
-Data lives in `%LOCALAPPDATA%\Margin`.
+To build the installer, install [NSIS](https://nsis.sourceforge.io) and run in `windows/installer/`:
+
+    makensis -DVERSION=1.0.0 -DEXE=..\out\Margin.exe Margin.nsi
+
+Data lives in `%LOCALAPPDATA%\Margin`. Uninstalling keeps it unless you choose to delete it.
 
 ## macOS
 
@@ -70,6 +79,7 @@ Two things are approximations, because College Board does not publish them: the 
 - `MarginCore` (Swift) and `Margin.Core` (C#) are ports of each other: bank storage and download,
   parsing, grading, module assembly, scoring, session flow. Each has the same self-test.
 - The bank is stored as `bank.jsonl`, one raw question per line, and parsed at launch.
+- The icon is drawn in `assets/icon.svg`; `assets/make-icons.py` exports the `.ico` and `.icns` files.
 
 ## Content
 

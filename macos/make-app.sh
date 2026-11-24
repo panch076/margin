@@ -10,6 +10,7 @@ APP="Margin.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Margin"
+cp Margin.icns "$APP/Contents/Resources/Margin.icns"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -20,6 +21,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleDisplayName</key><string>Margin</string>
     <key>CFBundleIdentifier</key><string>local.margin.app</string>
     <key>CFBundleExecutable</key><string>Margin</string>
+    <key>CFBundleIconFile</key><string>Margin</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>1.0</string>
     <key>CFBundleVersion</key><string>1</string>

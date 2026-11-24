@@ -3,6 +3,7 @@ bin/
 obj/
 out/
 *.user
+windows/installer/*.exe
 
 # Swift
 .build/
