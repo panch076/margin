@@ -1,0 +1,138 @@
+name: Build
+
+# Every push builds both apps, so a broken build shows up early.
+# To publish a release: Actions > Build > Run workflow (on main). That run builds both apps and then
+# creates the GitHub release "v<version>" with the Windows installer, the portable exe and the macOS disk image.
+
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Read version
+        id: v
+        shell: bash
+        run: echo "version=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' windows/Margin.App/Margin.App.csproj)" >> "$GITHUB_OUTPUT"
+      - name: Test engine
+        run: dotnet run --project windows/Margin.Tests
+      - name: Build app
+        run: >
+          dotnet publish windows/Margin.App -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true -p:DebugType=none -o windows/out
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $version = "${{ steps.v.outputs.version }}"
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            $nsis = Join-Path ${env:ProgramFiles(x86)} "NSIS"
+            if (-not (Test-Path (Join-Path $nsis "makensis.exe"))) { choco install nsis -y --no-progress }
+            $env:PATH += ";$nsis"
+          }
+          Push-Location windows/installer
+          makensis "-DVERSION=$version" "-DEXE=..\out\Margin.exe" Margin.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Move-Item "windows/installer/Margin-Setup-$version.exe" dist/
+          Compress-Archive -Path windows/out/Margin.exe -DestinationPath "dist/Margin-$version-portable.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+      - name: Test engine
+        working-directory: macos
+        run: swift run CoreCheck
+      - name: Build app
+        working-directory: macos
+        run: |
+          set -o pipefail
+          status=0
+          UNIVERSAL=1 ./make-app.sh 2>&1 | tee build.log || status=$?
+          if [ "$status" -ne 0 ]; then
+            # Surface compiler errors on the run's summary page.
+            grep -E '^/.+:[0-9]+:[0-9]+: error: ' build.log | sort -u | head -40 | while IFS= read -r line; do
+              file="${line%%:*}"; rest="${line#*:}"; row="${rest%%:*}"; rest="${rest#*:}"; col="${rest%%:*}"
+              message="${line#*: error: }"
+              echo "::error file=${file#"$GITHUB_WORKSPACE"/},line=${row},col=${col}::${message}"
+            done
+            {
+              echo '### macOS build errors'
+              echo '```'
+              grep -E ': error: ' build.log | sed "s#$GITHUB_WORKSPACE/##" | sort -u | head -150
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit "$status"
+          fi
+      - name: Make disk image
+        working-directory: macos
+        run: |
+          ./make-dmg.sh
+          mkdir -p ../dist && mv Margin-*.dmg ../dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'workflow_dispatch'
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' windows/Margin.App/Margin.App.csproj)"
+          mac_version="$(sed -n 's/.*static let currentVersion = "\(.*\)".*/\1/p' macos/Sources/MarginCore/Updater.swift)"
+          if [ "$version" != "$mac_version" ]; then
+            echo "::error::Version mismatch: Windows project says $version, macOS says $mac_version."; exit 1
+          fi
+          if gh release view "v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release v$version already exists. Raise the version number first (see README, Releasing a new version)."; exit 1
+          fi
+          cd dist
+          sha256sum Margin-* > SHA256SUMS.txt
+          cat > ../notes.md <<NOTES
+          **Windows:** download \`Margin-Setup-$version.exe\` and run it. It installs for the current user only and adds a Start Menu shortcut. \`Margin-$version-portable.zip\` is the same app as a single exe. Installed copies update themselves from here.
+
+          **macOS 26:** download \`Margin-$version.dmg\`, open it and drag Margin to Applications.
+
+          These builds are not code-signed. On Windows, SmartScreen shows a warning the first time: **More info > Run anyway**. On macOS, the first launch is blocked: open **System Settings > Privacy & Security**, scroll to the message about Margin and choose **Open Anyway**.
+
+          After installing, open **Home > Download Question Bank** once; everything except the graphing calculator then works offline.
+          NOTES
+          sed -i 's/^          //' ../notes.md
+          gh release create "v$version" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Margin $version" --notes-file ../notes.md \
+            Margin-Setup-*.exe Margin-*-portable.zip Margin-*.dmg SHA256SUMS.txt

@@ -10,6 +10,8 @@ windows/installer/*.exe
 .swiftpm/
 *.xcodeproj/
 Margin.app/
+*.dmg
+build.log
 DerivedData/
 
 # OS

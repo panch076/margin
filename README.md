@@ -49,14 +49,45 @@ Data lives in `%LOCALAPPDATA%\Margin`. Uninstalling keeps it unless you choose t
 
 ## macOS
 
-Needs macOS 26 and Xcode 26 (or its command line tools). In `macos/`:
+Download `Margin-<version>.dmg` from [Releases](https://github.com/panch076/margin/releases), open it and drag
+Margin to Applications. It needs macOS 26 and runs on both Apple silicon and Intel Macs.
+
+The app is not signed with an Apple Developer ID, so the first launch is blocked. Open **System Settings >
+Privacy & Security**, scroll down to the message about Margin and choose **Open Anyway**.
+
+To build it yourself you need Xcode 26 (or its command line tools). In `macos/`:
 
     swift run CoreCheck      # engine self-test
     ./make-app.sh            # builds Margin.app in this folder
+    ./make-dmg.sh            # packs it into Margin-<version>.dmg
 
 Or open `Package.swift` in Xcode, pick the **Margin** scheme and press Run.
 
 Data lives in `~/Library/Application Support/Margin`.
+
+## Updates
+
+The app checks this repository's latest [release](https://github.com/panch076/margin/releases) when it starts,
+and Home has a **Check for updates** button.
+
+- **Windows (installed with the setup program):** Home shows the new version with **Update and restart**. The
+  app downloads the new installer, checks it against the size and SHA-256 that GitHub publishes for the file,
+  asks before closing, then installs silently and reopens. The question bank and results are kept.
+- **Windows (portable exe)** and **macOS:** the new version is announced with a link to the release, where the
+  new download is.
+
+Updates are only ever taken from this repository's own release downloads. The builds are not code-signed, so
+an update is as trustworthy as the GitHub account that publishes it.
+
+### Releasing a new version
+
+1. Raise the version in `windows/Margin.App/Margin.App.csproj` (`<Version>`) and in
+   `macos/Sources/MarginCore/Updater.swift` (`currentVersion`), and push to `main`.
+2. On GitHub, open **Actions > Build > Run workflow** and run it on `main`.
+
+That run builds and tests both apps, then publishes the release `v<version>` with the Windows installer, the
+portable exe, the macOS disk image and their checksums. Installed Windows copies update themselves from it.
+Every ordinary push also runs the build (without publishing), so a broken build shows up early.
 
 ## What the test mode does
 
